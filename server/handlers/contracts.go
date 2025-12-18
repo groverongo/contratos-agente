@@ -12,26 +12,33 @@ import (
 	"gorm.io/gorm"
 )
 
-// CreateContract handles uploading a file and creating a contract
+// CreateContract handles creating a contract metadata and returning a Presigned PUT URL
 func (h *Handler) CreateContract(c echo.Context) error {
-	// 1. Get user ID from Auth (assuming stub or header for now)
-	userID := c.Request().Header.Get("X-Stack-Auth-User-Id") // Client should send this
+	// 1. Get user ID from Auth
+	userID := c.Request().Header.Get("X-Stack-Auth-User-Id")
 	if userID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "User ID missing"})
 	}
 
-	title := c.FormValue("title")
+	type Req struct {
+		Title       string `json:"title"`
+		Filename    string `json:"filename"`
+		ContentType string `json:"content_type"`
+		Size        int64  `json:"size"`
+	}
+	var req Req
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request"})
+	}
 
-	// 2. Upload file to MinIO
-	file, err := c.FormFile("file")
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "File required"})
+	if req.Title == "" || req.Filename == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Title and Filename required"})
 	}
-	src, err := file.Open()
-	if err != nil {
-		return err
+
+	// Default parameters
+	if req.ContentType == "" {
+		req.ContentType = "application/pdf"
 	}
-	defer src.Close()
 
 	bucketName := "contracts"
 	// Ensure bucket exists
@@ -40,18 +47,22 @@ func (h *Handler) CreateContract(c echo.Context) error {
 		h.MinIO.MakeBucket(context.Background(), bucketName, minio.MakeBucketOptions{})
 	}
 
-	objectName := uuid.New().String() + "-" + file.Filename
-	_, err = h.MinIO.PutObject(context.Background(), bucketName, objectName, src, file.Size, minio.PutObjectOptions{ContentType: file.Header.Get("Content-Type")})
+	objectName := uuid.New().String() + "-" + req.Filename
+
+	// 2. Generate Presigned PUT URL
+	// We can set expiry (e.g., 15 minutes)
+	expiry := time.Minute * 15
+	presignedURL, err := h.MinIO.PresignedPutObject(context.Background(), bucketName, objectName, expiry)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to upload file"})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to generate upload URL"})
 	}
 
 	// 3. Create Contract in DB
 	contract := Contract{
 		ID:       uuid.New(),
-		Title:    title,
+		Title:    req.Title,
 		AuthorID: userID,
-		Status:   "Pending",
+		Status:   "Pending Upload", // Status indicating file is not yet confirmed uploaded
 	}
 
 	if err := h.DB.Create(&contract).Error; err != nil {
@@ -69,7 +80,10 @@ func (h *Handler) CreateContract(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create version"})
 	}
 
-	return c.JSON(http.StatusCreated, contract)
+	return c.JSON(http.StatusCreated, map[string]interface{}{
+		"contract":   contract,
+		"upload_url": presignedURL.String(),
+	})
 }
 
 // ListContracts lists contracts for the user (as author or recipient)
