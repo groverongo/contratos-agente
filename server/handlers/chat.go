@@ -2,9 +2,12 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
+	"time"
 
 	"github.com/labstack/echo/v4"
 )
@@ -36,21 +39,17 @@ func (h *Handler) AskAI(c echo.Context) error {
 	latest := contract.Versions[len(contract.Versions)-1]
 
 	// 2. Generate Presigned URL
-	// presignedURL, _ := h.MinIO.PresignedGetObject(...) (We might need to duplicate this logic or make it a helper)
-	// For now, simpler: pass the file path or just let AI agent access MinIO?
-	// Usually easier if AI agent downloads from a URL or we stream it.
-	// Let's assume we pass the presigned URL.
-
-	// ... presign logic ... (omitted for brevity, assume helper exists or duplicated)
-	// Actually, let's just send the question for now and assume the AI service can handle it.
-	// The requirement says "AI assistant... automatically uploading the pdf".
-	// Let's forward the request to AI Service at http://ai-agent:3000/ask
+	// Presign URL
+	reqParams := make(url.Values)
+	presignedURL, err := h.MinIO.PresignedGetObject(context.Background(), "contracts", latest.FilePath, time.Hour*1, reqParams)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to sign URL"})
+	}
 
 	aiReq := map[string]interface{}{
 		"contract_id": req.ContractID,
 		"question":    req.Question,
-		"file_path":   latest.FilePath, // Give path, AI Agent needs MinIO access too? Or we pass URL.
-		// Let's pass the URL if we can.
+		"file_url":    presignedURL.String(),
 	}
 
 	jsonData, _ := json.Marshal(aiReq)
