@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "stack-auth": {
+      "serverUrl": "https://mcp.stack-auth.com/"
+    }
+  }
+}
